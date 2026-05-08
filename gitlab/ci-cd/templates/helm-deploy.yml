@@ -1,0 +1,83 @@
+# Helm Deploy Template
+# Deploys Helm charts to Kubernetes clusters
+
+.deploy-helm-base:
+  extends: .deploy-base
+  variables:
+    HELM_UPGRADE_FLAGS: "--atomic --timeout ${DEPLOY_TIMEOUT} --wait --create-namespace"
+  script:
+    - |
+      CHART_NAME="${CHART_NAME:-${CI_PROJECT_NAME}}"
+      NAMESPACE="${KUBERNETES_NAMESPACE}"
+      VALUES_FILE="${VALUES_FILE}"
+      CHART_SOURCE="${CHART_SOURCE}"
+      
+      echo "Deploying ${CHART_NAME} to namespace ${NAMESPACE} in ${ENVIRONMENT}"
+      
+      # Create namespace with proper naming convention
+      kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+      
+      # Deploy using Helm
+      if [ -n "${VALUES_FILE}" ] && [ -f "${VALUES_FILE}" ]; then
+        helm upgrade --install ${CHART_NAME} ${CHART_SOURCE} \
+          --namespace ${NAMESPACE} \
+          -f ${VALUES_FILE} \
+          ${HELM_UPGRADE_FLAGS} || exit 1
+      else
+        helm upgrade --install ${CHART_NAME} ${CHART_SOURCE} \
+          --namespace ${NAMESPACE} \
+          ${HELM_UPGRADE_FLAGS} || exit 1
+      fi
+      
+      # Wait for deployment to be ready
+      kubectl wait --for=condition=available --timeout=${DEPLOY_TIMEOUT} \
+        deployment/${CHART_NAME} -n ${NAMESPACE} || true
+      
+      echo "${CHART_NAME} deployed successfully to ${ENVIRONMENT}"
+
+# Deploy from local Helm repository
+deploy:helm:local:
+  extends: .deploy-helm-base
+  variables:
+    CHART_SOURCE: "local-charts/${CHART_NAME}"
+  before_script:
+    - |
+      # Add local Helm repository
+      if [ -f "helm-repos/${CHART_CATEGORY}/index.yaml" ]; then
+        helm repo add local-charts file://$(pwd)/helm-repos/${CHART_CATEGORY} || true
+        helm repo update local-charts
+      else
+        echo "ERROR: Local Helm repository not found"
+        exit 1
+      fi
+  only:
+    - main
+    - tags
+
+# Deploy from packaged chart
+deploy:helm:package:
+  extends: .deploy-helm-base
+  variables:
+    CHART_SOURCE: "${PACKAGE_FILE}"
+  before_script:
+    - |
+      if [ -z "${PACKAGE_FILE}" ]; then
+        PACKAGE_FILE=$(ls helm-packages/${CHART_NAME}-*.tgz | head -1)
+        export CHART_SOURCE="${PACKAGE_FILE}"
+      fi
+      if [ ! -f "${CHART_SOURCE}" ]; then
+        echo "ERROR: Package file not found: ${CHART_SOURCE}"
+        exit 1
+      fi
+  only:
+    - main
+    - tags
+
+# Deploy from chart directory
+deploy:helm:directory:
+  extends: .deploy-helm-base
+  variables:
+    CHART_SOURCE: "."
+  only:
+    - main
+    - tags

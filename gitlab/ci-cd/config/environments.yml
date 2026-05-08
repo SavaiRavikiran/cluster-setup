@@ -1,0 +1,93 @@
+# Environment Configuration
+# This file defines environment-specific settings
+
+environments:
+  dev:
+    namespace_prefix: "dev"
+    domain: "dev.example.com"
+    replicas:
+      prometheus: 1
+      grafana: 1
+      postgresql: 1
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+    storage:
+      class: "nfs-client"
+      size: "10Gi"
+    monitoring:
+      enabled: true
+      retention: "7d"
+    auto_deploy: false
+    approval_required: true
+
+  staging:
+    namespace_prefix: "staging"
+    domain: "staging.example.com"
+    replicas:
+      prometheus: 2
+      grafana: 2
+      postgresql: 2
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "4Gi"
+        cpu: "2000m"
+    storage:
+      class: "nfs-client"
+      size: "50Gi"
+    monitoring:
+      enabled: true
+      retention: "30d"
+    auto_deploy: false
+    approval_required: true
+
+  production:
+    namespace_prefix: "production"
+    domain: "example.com"
+    replicas:
+      prometheus: 3
+      grafana: 3
+      postgresql: 3
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1000m"
+      limits:
+        memory: "8Gi"
+        cpu: "4000m"
+    storage:
+      class: "nfs-client"
+      size: "100Gi"
+    monitoring:
+      enabled: true
+      retention: "90d"
+    auto_deploy: false
+    approval_required: true
+    protected: true
+
+# Component-specific overrides
+component_overrides:
+  postgresql:
+    production:
+      replicas: 2
+      storage:
+        size: "200Gi"
+  
+  prometheus:
+    production:
+      storage:
+        size: "500Gi"
+      retention: "365d"
+  
+  minio:
+    production:
+      replicas: 4
+      storage:
+        size: "1Ti"

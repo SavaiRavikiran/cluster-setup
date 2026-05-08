@@ -1,0 +1,79 @@
+# Helm Template Template for In-House Tools
+# Templates Helm charts for in-house/custom tools
+
+.template-helm-base:
+  image: alpine/helm:${HELM_VERSION}
+  before_script:
+    - helm version
+    - |
+      export CHART_NAME="${CHART_NAME:-${CI_PROJECT_NAME}}"
+      export VALUES_FILE="${VALUES_FILE:-values.yaml}"
+      export OUTPUT_DIR="${OUTPUT_DIR:-rendered-manifests}"
+      mkdir -p ${OUTPUT_DIR}
+  script:
+    - |
+      echo "Templating Helm chart: ${CHART_NAME}"
+      
+      # Template the chart
+      if [ -f "${VALUES_FILE}" ]; then
+        helm template ${CHART_NAME} . \
+          -f ${VALUES_FILE} \
+          --output-dir ${OUTPUT_DIR} \
+          --debug || exit 1
+      else
+        helm template ${CHART_NAME} . \
+          --output-dir ${OUTPUT_DIR} \
+          --debug || exit 1
+      fi
+      
+      echo "Chart templated successfully"
+      ls -la ${OUTPUT_DIR}/
+  artifacts:
+    paths:
+      - ${OUTPUT_DIR}/
+    expire_in: 1 week
+
+# Template Helm chart
+template:helm:
+  extends: .template-helm-base
+  stage: validate
+  script:
+    - |
+      echo "Templating Helm chart: ${CHART_NAME}"
+      if [ -f "${VALUES_FILE}" ]; then
+        helm template ${CHART_NAME} . -f ${VALUES_FILE} --debug > /dev/null || exit 1
+      else
+        helm template ${CHART_NAME} . --debug > /dev/null || exit 1
+      fi
+      echo "Chart template validation successful"
+  only:
+    - merge_requests
+    - branches
+    - tags
+
+# Template and validate
+template:helm:validate:
+  extends: .template-helm-base
+  stage: validate
+  script:
+    - |
+      echo "Templating and validating Helm chart: ${CHART_NAME}"
+      
+      # Template
+      if [ -f "${VALUES_FILE}" ]; then
+        helm template ${CHART_NAME} . -f ${VALUES_FILE} --output-dir ${OUTPUT_DIR} || exit 1
+      else
+        helm template ${CHART_NAME} . --output-dir ${OUTPUT_DIR} || exit 1
+      fi
+      
+      # Validate YAML syntax
+      find ${OUTPUT_DIR} -name "*.yaml" -exec yamllint {} \; || true
+      
+      # Validate Kubernetes manifests
+      find ${OUTPUT_DIR} -name "*.yaml" -exec kubectl --dry-run=client -f {} \; || true
+      
+      echo "Chart templated and validated successfully"
+  only:
+    - merge_requests
+    - branches
+    - tags

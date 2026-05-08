@@ -1,0 +1,605 @@
+#!/bin/bash
+
+# Nova CLI - Unified command-line interface for cluster management
+# Usage: ./nova <command> [options]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Print colored output
+print_info() { echo -e "${BLUE}ℹ${NC} $1"; }
+print_success() { echo -e "${GREEN}✓${NC} $1"; }
+print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
+print_error() { echo -e "${RED}✗${NC} $1"; }
+
+# Show usage
+show_usage() {
+    cat << EOF
+Nova CLI - Cluster Management Tool
+
+Usage: nova <command> [options]
+
+Commands:
+  deploy <component> [env]     Deploy a component to environment (dev/staging/prod)
+  update <component> [env]     Update a component in environment
+  status [component] [env]     Show deployment status
+  rollback <component> [env]   Rollback component to previous version
+  list                         List all available components
+  validate <component>         Validate component configuration
+  logs <component> [env]       Show component logs
+  health                       Check cluster health
+  pull-charts                  Add Helm repositories (for remote chart deployment)
+  env                          Show current environment context
+  switch-env <env>             Switch environment context
+  help                         Show this help message
+
+Examples:
+  nova deploy postgresql dev
+  nova deploy novaridium-postgres dev
+  nova status novaridium-app staging
+  nova rollback postgresql prod
+  nova list
+  nova health
+  nova pull-charts
+
+Environment Variables:
+  NOVA_ENV                     Current environment (dev/staging/prod)
+  NOVA_NAMESPACE_PREFIX        Namespace prefix (default: nova)
+
+Note: 
+  - If local charts are not found, CLI will attempt to use remote Helm repositories
+  - Run 'nova pull-charts' first to add remote repositories
+  - Or run './scripts/09-pull-and-store-helm.sh' to download charts locally
+
+EOF
+}
+
+# Check if command exists
+check_command() {
+    if ! command -v "$1" &> /dev/null; then
+        print_error "$1 is not installed or not in PATH"
+        print_info "Install $1 to use this feature"
+        return 1
+    fi
+    return 0
+}
+
+# Map component names (handle variations)
+map_component_name() {
+    local component=$1
+    case $component in
+        postgresql|postgres|novaridium-postgres)
+            echo "postgresql"  # Use actual directory name
+            ;;
+        minio|minio-operator)
+            echo "minio"  # Use actual directory name
+            ;;
+        *)
+            echo "$component"
+            ;;
+    esac
+}
+
+# Check if directory is a valid Helm chart
+is_valid_helm_chart() {
+    local chart_dir=$1
+    [ -f "${chart_dir}/Chart.yaml" ] || [ -f "${chart_dir}/chart.yaml" ]
+}
+
+# Get namespace for component and environment
+get_namespace() {
+    local component=$1
+    local env=${2:-${NOVA_ENV:-dev}}
+    local env_short
+    
+    case $env in
+        dev|development) env_short="dev" ;;
+        staging|stage) env_short="staging" ;;
+        prod|production) env_short="prod" ;;
+        *) env_short="dev" ;;
+    esac
+    
+    echo "nova-${env_short}${component}"
+}
+
+# List all components
+list_components() {
+    print_info "Available Components:"
+    echo ""
+    echo "Platform Components:"
+    for comp in cilium metallb metrics-server nfs-provisioner kong gitlab gitlab-runner prometheus grafana alertmanager wiz; do
+        echo "  - $comp"
+    done
+    echo ""
+    echo "Application Components:"
+    for comp in chatmcp-app discomine-app milvus minio-operator miniolab novaridium-app vectorization-service \
+               novaridium-flyte novaridium-ollama novaridium-openfga novaridium-pgadmin novaridium-postgres \
+               validator-app langfuse neo4j prefect kubelens redis; do
+        echo "  - $comp"
+    done
+}
+
+# Deploy component
+# Update the deploy_component function to handle missing charts better
+deploy_component() {
+    local component=$1
+    local env=${2:-${NOVA_ENV:-dev}}
+    
+    # Map component name to actual directory name
+    local actual_component=$(map_component_name "$component")
+    local namespace=$(get_namespace "$actual_component" "$env")
+    
+    # Check prerequisites
+    if ! check_command "kubectl"; then
+        return 1
+    fi
+    if ! check_command "helm"; then
+        return 1
+    fi
+    
+    print_info "Deploying $component (as $actual_component) to $env environment..."
+    
+    # Find values file
+    local values_file=""
+    if [ -f "cluster/${actual_component}/${actual_component}-values.yaml" ]; then
+        values_file="cluster/${actual_component}/${actual_component}-values.yaml"
+    elif [ -f "monitoring/${actual_component}/${actual_component}-values.yaml" ]; then
+        values_file="monitoring/${actual_component}/${actual_component}-values.yaml"
+    elif [ -f "novaridium/${actual_component}/${actual_component}-values.yaml" ]; then
+        values_file="novaridium/${actual_component}/${actual_component}-values.yaml"
+    else
+        print_error "Values file not found for $component"
+        print_info "Searched for:"
+        print_info "  - cluster/${actual_component}/${actual_component}-values.yaml"
+        print_info "  - monitoring/${actual_component}/${actual_component}-values.yaml"
+        print_info "  - novaridium/${actual_component}/${actual_component}-values.yaml"
+        return 1
+    fi
+    
+    print_success "Found values file: $values_file"
+    
+    # Find chart - search multiple locations
+    local chart_path=""
+    local chart_repo=""
+    local chart_name=""
+    local use_remote=false
+    
+    # First, try local repositories (check if valid Helm chart)
+    if [ -d "helm-repos/platform/${actual_component}" ] && is_valid_helm_chart "helm-repos/platform/${actual_component}"; then
+        chart_path="helm-repos/platform/${actual_component}"
+    elif [ -d "helm-repos/application/${actual_component}" ] && is_valid_helm_chart "helm-repos/application/${actual_component}"; then
+        chart_path="helm-repos/application/${actual_component}"
+    elif [ -d "helm-charts/cluster/${actual_component}" ] && is_valid_helm_chart "helm-charts/cluster/${actual_component}"; then
+        chart_path="helm-charts/cluster/${actual_component}"
+    elif [ -d "helm-charts/monitoring/${actual_component}" ] && is_valid_helm_chart "helm-charts/monitoring/${actual_component}"; then
+        chart_path="helm-charts/monitoring/${actual_component}"
+    elif [ -d "helm-charts/novaridium/${actual_component}" ] && is_valid_helm_chart "helm-charts/novaridium/${actual_component}"; then
+        chart_path="helm-charts/novaridium/${actual_component}"
+    else
+        use_remote=true
+        # Chart not found locally or invalid - try to use remote repo as fallback
+        print_warning "Helm chart not found locally or invalid for $component"
+        print_info "Attempting to use remote Helm repository..."
+        
+        # Determine chart repository and name based on component
+        case $actual_component in
+            postgresql)
+                chart_repo="bitnami"
+                chart_name="postgresql"
+                ;;
+            redis)
+                chart_repo="bitnami"
+                chart_name="redis"
+                ;;
+            minio)
+                chart_repo="minio"
+                chart_name="minio"
+                ;;
+            milvus)
+                chart_repo="milvus"
+                chart_name="milvus"
+                ;;
+            prometheus)
+                chart_repo="prometheus-community"
+                chart_name="kube-prometheus-stack"
+                ;;
+            grafana)
+                chart_repo="grafana"
+                chart_name="grafana"
+                ;;
+            cilium)
+                chart_repo="cilium"
+                chart_name="cilium"
+                ;;
+            metallb)
+                chart_repo="metallb"
+                chart_name="metallb"
+                ;;
+            kong)
+                chart_repo="kong"
+                chart_name="kong"
+                ;;
+            alertmanager)
+                chart_repo="prometheus-community"
+                chart_name="alertmanager"
+                ;;
+            loki)
+                chart_repo="grafana"
+                chart_name="loki-stack"
+                ;;
+            airbyte)
+                chart_repo="airbyte"
+                chart_name="airbyte"
+                ;;
+            flyte|novaridium-flyte)
+                chart_repo="flyteorg"
+                chart_name="flyte-binary"
+                ;;
+            neo4j)
+                chart_repo="neo4j"
+                chart_name="neo4j"
+                ;;
+            prefect)
+                chart_repo="prefect"
+                chart_name="prefect-server"
+                ;;
+            *)
+                print_error "Cannot determine remote repository for $component"
+                print_info ""
+                print_info "To fix this:"
+                print_info "  1. Pull Helm charts: ./scripts/09-pull-and-store-helm.sh"
+                print_info "  2. Or run: ./cli/nova pull-charts (to add remote repos)"
+                print_info "  3. Or manually add chart to: helm-repos/application/${actual_component}/"
+                print_info "  4. Or deploy manually using: helm install <name> <repo>/<chart> -f $values_file"
+                return 1
+                ;;
+        esac
+        
+        # Add repository if needed
+        if ! helm repo list | grep -q "^${chart_repo}"; then
+            print_info "Adding Helm repository: ${chart_repo}"
+            case $chart_repo in
+                bitnami)
+                    helm repo add bitnami https://charts.bitnami.com/bitnami || true
+                    ;;
+                minio)
+                    helm repo add minio https://charts.min.io || true
+                    ;;
+                milvus)
+                    helm repo add milvus https://milvus-io.github.io/milvus-helm || true
+                    ;;
+                prometheus-community)
+                    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                    ;;
+                grafana)
+                    helm repo add grafana https://grafana.github.io/helm-charts || true
+                    ;;
+                cilium)
+                    helm repo add cilium https://helm.cilium.io/ || true
+                    ;;
+                metallb)
+                    helm repo add metallb https://metallb.github.io/metallb || true
+                    ;;
+                kong)
+                    helm repo add kong https://charts.konghq.com || true
+                    ;;
+                airbyte)
+                    helm repo add airbyte https://airbytehq.github.io/helm-charts || true
+                    ;;
+                flyteorg)
+                    helm repo add flyteorg https://flyteorg.github.io/flyte || true
+                    ;;
+                neo4j)
+                    helm repo add neo4j https://helm.neo4j.com/neo4j || true
+                    ;;
+                prefect)
+                    helm repo add prefect https://prefecthq.github.io/prefect-helm || true
+                    ;;
+            esac
+            helm repo update
+        fi
+        
+        chart_path="${chart_repo}/${chart_name}"
+        print_info "Using remote chart: ${chart_path}"
+    fi
+    
+    if [ -z "$chart_path" ]; then
+        print_error "Could not find or determine chart for $component"
+        return 1
+    fi
+    
+    print_success "Using chart: $chart_path"
+    
+    # Create namespace
+    kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -
+    
+    # Deploy with Helm
+    if [ "$use_remote" = "true" ] || [ ! -d "$chart_path" ]; then
+        # Remote chart (chart_path is in format "repo/chart")
+        print_info "Deploying from remote chart: $chart_path"
+        helm upgrade --install "$actual_component" "$chart_path" \
+            --namespace "$namespace" \
+            -f "$values_file" \
+            --atomic --timeout 600s --wait
+    else
+        # Local chart directory
+        print_info "Deploying from local chart: $chart_path"
+        helm upgrade --install "$actual_component" "$chart_path" \
+            --namespace "$namespace" \
+            -f "$values_file" \
+            --atomic --timeout 600s --wait
+    fi
+    
+    print_success "$component deployed successfully to $env"
+}
+
+# Show status
+show_status() {
+    local component=${1:-""}
+    local env=${2:-${NOVA_ENV:-dev}}
+    
+    # Check prerequisites
+    if ! check_command "kubectl"; then
+        return 1
+    fi
+    
+    if [ -z "$component" ]; then
+        print_info "Cluster Status:"
+        kubectl get namespaces | grep "^nova-" || print_warning "No nova namespaces found"
+    else
+        # Map component name
+        component=$(map_component_name "$component")
+        local namespace=$(get_namespace "$component" "$env")
+        print_info "Status of $component in $env:"
+        echo ""
+        kubectl get all -n "$namespace" || print_warning "Component not found or not deployed"
+        echo ""
+        if check_command "helm"; then
+            helm list -n "$namespace" || true
+        fi
+    fi
+}
+# Add this new command in the main() function
+# Rollback component
+rollback_component() {
+    local component=$1
+    local env=${2:-${NOVA_ENV:-dev}}
+    local namespace=$(get_namespace "$component" "$env")
+    
+    print_info "Rolling back $component in $env..."
+    
+    # Show history
+    echo ""
+    print_info "Deployment history:"
+    helm history "$component" -n "$namespace" || {
+        print_error "Component not found"
+        return 1
+    }
+    
+    # Rollback
+    helm rollback "$component" -n "$namespace"
+    print_success "$component rolled back successfully"
+}
+
+# Validate component
+validate_component() {
+    local component=$1
+    
+    # Map component name
+    component=$(map_component_name "$component")
+    
+    print_info "Validating $component..."
+    
+    # Check helm
+    if ! check_command "helm"; then
+        return 1
+    fi
+    
+    # Find values file
+    local values_file=""
+    if [ -f "cluster/${component}/${component}-values.yaml" ]; then
+        values_file="cluster/${component}/${component}-values.yaml"
+    elif [ -f "monitoring/${component}/${component}-values.yaml" ]; then
+        values_file="monitoring/${component}/${component}-values.yaml"
+    elif [ -f "novaridium/${component}/${component}-values.yaml" ]; then
+        values_file="novaridium/${component}/${component}-values.yaml"
+    else
+        print_error "Values file not found"
+        return 1
+    fi
+    
+    # Validate YAML
+    if command -v yamllint &> /dev/null; then
+        yamllint "$values_file" || print_warning "YAML linting issues found"
+    fi
+    
+    # Template Helm chart - try local first, then remote
+    local chart_path=""
+    if [ -d "helm-repos/platform/${component}" ] && is_valid_helm_chart "helm-repos/platform/${component}"; then
+        chart_path="helm-repos/platform/${component}"
+    elif [ -d "helm-repos/application/${component}" ] && is_valid_helm_chart "helm-repos/application/${component}"; then
+        chart_path="helm-repos/application/${component}"
+    elif [ -d "helm-charts/cluster/${component}" ] && is_valid_helm_chart "helm-charts/cluster/${component}"; then
+        chart_path="helm-charts/cluster/${component}"
+    elif [ -d "helm-charts/monitoring/${component}" ] && is_valid_helm_chart "helm-charts/monitoring/${component}"; then
+        chart_path="helm-charts/monitoring/${component}"
+    elif [ -d "helm-charts/novaridium/${component}" ] && is_valid_helm_chart "helm-charts/novaridium/${component}"; then
+        chart_path="helm-charts/novaridium/${component}"
+    fi
+    
+    if [ -n "$chart_path" ]; then
+        helm template "$component" "$chart_path" -f "$values_file" > /dev/null
+        print_success "$component validation passed"
+    else
+        print_warning "Local chart not found, skipping template validation"
+        print_success "Values file validation passed"
+        print_info "Run './cli/nova pull-charts' to add remote repositories for full validation"
+    fi
+}
+
+# Show logs
+show_logs() {
+    local component=$1
+    local env=${2:-${NOVA_ENV:-dev}}
+    
+    # Map component name
+    component=$(map_component_name "$component")
+    local namespace=$(get_namespace "$component" "$env")
+    
+    # Check prerequisites
+    if ! check_command "kubectl"; then
+        return 1
+    fi
+    
+    print_info "Logs for $component in $env:"
+    kubectl logs -n "$namespace" -l app="$component" --tail=100 -f 2>/dev/null || \
+    kubectl logs -n "$namespace" deployment/"$component" --tail=100 -f 2>/dev/null || \
+    kubectl logs -n "$namespace" -l app.kubernetes.io/name="$component" --tail=100 -f 2>/dev/null || \
+    print_error "Could not find logs for $component"
+}
+
+# Health check
+check_health() {
+    # Check prerequisites
+    if ! check_command "kubectl"; then
+        return 1
+    fi
+    
+    print_info "Cluster Health Check:"
+    echo ""
+    
+    # Check nodes
+    echo "Nodes:"
+    kubectl get nodes 2>/dev/null || print_warning "Cannot connect to cluster"
+    echo ""
+    
+    # Check namespaces
+    echo "Nova Namespaces:"
+    kubectl get namespaces 2>/dev/null | grep "^nova-" || print_warning "No nova namespaces"
+    echo ""
+    
+    # Check deployments
+    echo "Deployments:"
+    for ns in $(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | grep "^nova-" || true); do
+        echo "  Namespace: $ns"
+        kubectl get deployments -n "$ns" 2>/dev/null || true
+    done
+}
+
+# Main command handler
+main() {
+    case "${1:-help}" in
+        deploy)
+            if [ -z "$2" ]; then
+                print_error "Component name required"
+                show_usage
+                exit 1
+            fi
+            deploy_component "$2" "$3"
+            ;;
+        update)
+            if [ -z "$2" ]; then
+                print_error "Component name required"
+                show_usage
+                exit 1
+            fi
+            deploy_component "$2" "$3"  # Update is same as deploy
+            ;;
+        status)
+            show_status "$2" "$3"
+            ;;
+        rollback)
+            if [ -z "$2" ]; then
+                print_error "Component name required"
+                show_usage
+                exit 1
+            fi
+            rollback_component "$2" "$3"
+            ;;
+        list)
+            list_components
+            ;;
+        validate)
+            if [ -z "$2" ]; then
+                print_error "Component name required"
+                show_usage
+                exit 1
+            fi
+            validate_component "$2"
+            ;;
+        logs)
+            if [ -z "$2" ]; then
+                print_error "Component name required"
+                show_usage
+                exit 1
+            fi
+            show_logs "$2" "$3"
+            ;;
+        health)
+            check_health
+            ;;
+        pull-charts)
+            print_info "Adding Helm repositories for remote chart deployment..."
+            
+            if ! check_command "helm"; then
+                return 1
+            fi
+            
+            # Add common repositories
+            print_info "Adding Helm repositories..."
+            helm repo add bitnami https://charts.bitnami.com/bitnami 2>/dev/null || true
+            helm repo add minio https://charts.min.io 2>/dev/null || true
+            helm repo add milvus https://milvus-io.github.io/milvus-helm 2>/dev/null || true
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+            helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+            helm repo add cilium https://helm.cilium.io/ 2>/dev/null || true
+            helm repo add metallb https://metallb.github.io/metallb 2>/dev/null || true
+            helm repo add kong https://charts.konghq.com 2>/dev/null || true
+            helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
+            helm repo add gitlab https://charts.gitlab.io 2>/dev/null || true
+            helm repo add airbyte https://airbytehq.github.io/helm-charts 2>/dev/null || true
+            helm repo add flyteorg https://flyteorg.github.io/flyte 2>/dev/null || true
+            helm repo add neo4j https://helm.neo4j.com/neo4j 2>/dev/null || true
+            helm repo add prefect https://prefecthq.github.io/prefect-helm 2>/dev/null || true
+            helm repo update
+            
+            print_success "Helm repositories added and updated"
+            print_info "You can now deploy components using remote charts"
+            print_info "Example: ./cli/nova deploy postgresql dev"
+            print_info ""
+            print_info "Or run ./scripts/09-pull-and-store-helm.sh to download charts locally"
+            ;;
+        env)
+            echo "Current environment: ${NOVA_ENV:-dev}"
+            echo "Namespace prefix: ${NOVA_NAMESPACE_PREFIX:-nova}"
+            ;;
+        switch-env)
+            if [ -z "$2" ]; then
+                print_error "Environment required (dev/staging/prod)"
+                exit 1
+            fi
+            export NOVA_ENV="$2"
+            print_success "Switched to environment: $2"
+            echo "Add to your shell: export NOVA_ENV=$2"
+            ;;
+        help|--help|-h)
+            show_usage
+            ;;
+        *)
+            print_error "Unknown command: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

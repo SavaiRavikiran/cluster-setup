@@ -1,0 +1,17 @@
+# Helm charts to pull and store locally
+# Format: repo_name chart_name version target_category
+# Categories: platform or application
+
+# Platform Components
+cilium cilium 1.14.0 platform
+metallb metallb 0.14.0 platform
+prometheus-community kube-prometheus-stack 55.0.0 platform
+grafana grafana 7.3.0 platform
+prometheus-community alertmanager 0.1.0 platform
+kong kong 2.19.0 platform
+
+# Application Components
+bitnami postgresql 15.0.0 application
+minio minio 5.0.0 application
+milvus milvus 4.0.0 application
+bitnami redis 17.0.0 application

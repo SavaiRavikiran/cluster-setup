@@ -1,0 +1,102 @@
+# Template for Platform Tool Deployment Repository
+# Use this template when creating a new platform tool repository
+
+include:
+  - local: '../../core/.gitlab-ci.yml'
+
+variables:
+  REPO_TYPE: "platform-tool"
+  CHART_CATEGORY: "platform"
+  KUBERNETES_NAMESPACE_PREFIX: "nova"
+
+stages:
+  - validate
+  - build
+  - package
+  - deploy-dev
+  - deploy-staging
+  - deploy-production
+
+# Validate Helm chart
+validate:helm:
+  extends: .validate-helm-chart
+  stage: validate
+  variables:
+    CHART_NAME: "${CI_PROJECT_NAME}"
+    VALUES_FILE: "values.yaml"
+
+# Build image if Dockerfile exists
+build:image:
+  extends: build:image:scan
+  stage: build
+  only:
+    - branches
+    - tags
+  rules:
+    - if: $CI_COMMIT_BRANCH && $DOCKERFILE_EXISTS
+    - if: $CI_COMMIT_TAG && $DOCKERFILE_EXISTS
+
+# Package Helm chart
+package:helm:
+  extends: package:helm:index
+  stage: package
+  variables:
+    CHART_NAME: "${CI_PROJECT_NAME}"
+    CHART_VERSION: "${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+    CHART_CATEGORY: "platform"
+    HELM_REPO_DIR: "helm-repos/platform"
+    HELM_REPO_URL: "${CI_REGISTRY}/helm-repos/platform"
+  only:
+    - main
+    - tags
+
+# Deploy to Dev
+deploy:dev:
+  extends: deploy:helm:local
+  stage: deploy-dev
+  variables:
+    CHART_NAME: "${CI_PROJECT_NAME}"
+    ENVIRONMENT: "dev"
+    KUBERNETES_NAMESPACE: "nova-dev${CI_PROJECT_NAME}"
+    VALUES_FILE: "values-dev.yaml"
+    CHART_CATEGORY: "platform"
+  environment:
+    name: dev/${CI_PROJECT_NAME}
+    url: https://${CI_PROJECT_NAME}.nova-dev.eu.novartis.net
+  only:
+    - develop
+  when: manual
+
+# Deploy to Staging
+deploy:staging:
+  extends: deploy:helm:local
+  stage: deploy-staging
+  variables:
+    CHART_NAME: "${CI_PROJECT_NAME}"
+    ENVIRONMENT: "staging"
+    KUBERNETES_NAMESPACE: "nova-staging${CI_PROJECT_NAME}"
+    VALUES_FILE: "values-staging.yaml"
+    CHART_CATEGORY: "platform"
+  environment:
+    name: staging/${CI_PROJECT_NAME}
+    url: https://${CI_PROJECT_NAME}.nova-staging.eu.novartis.net
+  only:
+    - main
+  when: manual
+
+# Deploy to Production
+deploy:production:
+  extends: deploy:helm:local
+  stage: deploy-production
+  variables:
+    CHART_NAME: "${CI_PROJECT_NAME}"
+    ENVIRONMENT: "production"
+    KUBERNETES_NAMESPACE: "nova-prod${CI_PROJECT_NAME}"
+    VALUES_FILE: "values-production.yaml"
+    CHART_CATEGORY: "platform"
+  environment:
+    name: production/${CI_PROJECT_NAME}
+    url: https://${CI_PROJECT_NAME}.nova-prod.eu.novartis.net
+  only:
+    - tags
+  when: manual

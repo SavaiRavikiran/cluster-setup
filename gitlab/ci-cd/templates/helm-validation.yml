@@ -1,0 +1,93 @@
+# Helm Chart Validation Template
+# Validates Helm charts before deployment
+
+.validate-helm-chart:
+  image: alpine/helm:${HELM_VERSION}
+  before_script:
+    - helm version
+    - helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+    - helm repo add grafana https://grafana.github.io/helm-charts || true
+    - helm repo add gitlab https://charts.gitlab.io || true
+    - helm repo add bitnami https://charts.bitnami.com/bitnami || true
+    - helm repo add airbyte https://airbytehq.github.io/helm-charts || true
+    - helm repo add flyteorg https://flyteorg.github.io/flyte || true
+    - helm repo add milvus https://milvus-io.github.io/milvus-helm || true
+    - helm repo add minio https://charts.min.io || true
+    - helm repo update
+  script:
+    - |
+      CHART_NAME="${CHART_NAME}"
+      VALUES_FILE="${VALUES_FILE}"
+      NAMESPACE="${NAMESPACE:-default}"
+      
+      echo "Validating Helm chart: ${CHART_NAME}"
+      
+      # Template the chart to check for syntax errors
+      if [ -f "${VALUES_FILE}" ]; then
+        helm template ${CHART_NAME} ${CHART_REPO}/${CHART_NAME} \
+          --namespace ${NAMESPACE} \
+          -f ${VALUES_FILE} \
+          --debug > /tmp/rendered-chart.yaml
+        
+        # Check for common issues
+        if grep -q "Error:" /tmp/rendered-chart.yaml; then
+          echo "ERROR: Chart validation failed"
+          cat /tmp/rendered-chart.yaml
+          exit 1
+        fi
+        
+        # Validate YAML syntax
+        if command -v yamllint >/dev/null 2>&1; then
+          yamllint /tmp/rendered-chart.yaml || true
+        fi
+        
+        echo "Chart validation successful"
+      else
+        echo "WARNING: Values file not found: ${VALUES_FILE}"
+      fi
+  allow_failure: false
+
+# Validate all Helm values files
+validate:helm-values:
+  extends: .validate-helm-chart
+  image: alpine/helm:${HELM_VERSION}
+  script:
+    - |
+      echo "Validating all Helm values files..."
+      
+      # Function to validate a values file
+      validate_values_file() {
+        local values_file=$1
+        local component=$(basename $(dirname $values_file))
+        
+        if [ -f "$values_file" ]; then
+          echo "Validating: $values_file"
+          # Check YAML syntax
+          helm template test-release . -f "$values_file" --debug > /dev/null 2>&1 || {
+            echo "ERROR: Invalid values file: $values_file"
+            return 1
+          }
+        fi
+      }
+      
+      # Validate cluster component values
+      find cluster -name "*-values.yaml" -type f | while read file; do
+        validate_values_file "$file" || exit 1
+      done
+      
+      # Validate monitoring component values
+      find monitoring -name "*-values.yaml" -type f | while read file; do
+        validate_values_file "$file" || exit 1
+      done
+      
+      # Validate novaridium component values
+      find novaridium -name "*-values.yaml" -type f | while read file; do
+        validate_values_file "$file" || exit 1
+      done
+      
+      echo "All Helm values files validated successfully"
+  only:
+    - merge_requests
+    - main
+    - develop
+    - tags

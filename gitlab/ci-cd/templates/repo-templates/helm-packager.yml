@@ -1,0 +1,66 @@
+# Template for Helm Packager Repository
+# Use this template when creating a repository that only packages Helm charts
+
+include:
+  - local: '../../core/.gitlab-ci.yml'
+
+variables:
+  REPO_TYPE: "helm-packager"
+  CHART_CATEGORY: "platform"
+
+stages:
+  - validate
+  - package
+  - publish
+
+# Validate Helm chart
+validate:helm:
+  extends: .validate-helm-chart
+  stage: validate
+  variables:
+    CHART_NAME: "${CI_PROJECT_NAME}"
+    VALUES_FILE: "values.yaml"
+
+# Template Helm chart
+template:helm:
+  extends: template:helm:validate
+  stage: validate
+  only:
+    - merge_requests
+    - branches
+
+# Package Helm chart
+package:helm:
+  extends: package:helm:index
+  stage: package
+  variables:
+    CHART_NAME: "${CI_PROJECT_NAME}"
+    CHART_VERSION: "${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+    CHART_CATEGORY: "${CHART_CATEGORY:-platform}"
+    HELM_REPO_DIR: "helm-repos/${CHART_CATEGORY}"
+    HELM_REPO_URL: "${CI_REGISTRY}/helm-repos/${CHART_CATEGORY}"
+  only:
+    - main
+    - tags
+
+# Publish to repository
+publish:helm:
+  stage: publish
+  image: alpine/helm:${HELM_VERSION}
+  script:
+    - |
+      echo "Publishing Helm chart to repository..."
+      CHART_NAME="${CI_PROJECT_NAME}"
+      CHART_CATEGORY="${CHART_CATEGORY:-platform}"
+      HELM_REPO_DIR="helm-repos/${CHART_CATEGORY}"
+      
+      # Update repository index
+      helm repo index ${HELM_REPO_DIR} --url "${CI_REGISTRY}/helm-repos/${CHART_CATEGORY}"
+      
+      # Commit and push (if in GitLab)
+      if [ -n "$CI" ]; then
+        echo "Chart published to repository index"
+      fi
+  only:
+    - tags
+  when: manual

@@ -1,0 +1,62 @@
+# Central CI/CD Core Job Templates
+# Include this file in your project's .gitlab-ci.yml
+
+include:
+  - local: '../templates/image-build.yml'
+  - local: '../templates/helm-package.yml'
+  - local: '../templates/helm-deploy.yml'
+  - local: '../templates/helm-template.yml'
+  - local: '../templates/deployment.yml'
+  - local: '../templates/helm-validation.yml'
+  - local: '../templates/security-scanning.yml'
+  - local: '../templates/rollback.yml'
+  - local: '../templates/notifications.yml'
+
+variables:
+  # Helm Configuration
+  HELM_VERSION: "3.14.0"
+  KUBECTL_VERSION: "1.29.0"
+  
+  # Registry Configuration
+  CI_REGISTRY: "${CI_REGISTRY:-registry.gitlab.com}"
+  CI_REGISTRY_IMAGE: "${CI_REGISTRY}/${CI_PROJECT_PATH}"
+  
+  # Kubernetes Configuration
+  KUBERNETES_NAMESPACE_PREFIX: "nova"
+  DEPLOY_TIMEOUT: "600s"
+  
+  # Naming Convention
+  # Namespace: nova-<env><application-name>
+  # Domain: *.nova-<env-name>.eu.novartis.net
+  
+  # Default values
+  HELM_UPGRADE_FLAGS: "--atomic --timeout ${DEPLOY_TIMEOUT} --wait --create-namespace"
+  
+  # Image tags
+  DOCKER_IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
+  HELM_CHART_VERSION: "${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+
+stages:
+  - validate
+  - lint
+  - security
+  - build
+  - package
+  - deploy-dev
+  - deploy-staging
+  - deploy-production
+  - post-deploy
+  - cleanup
+
+# Default jobs that can be extended
+.default-build:
+  stage: build
+  extends: .build-image-base
+
+.default-package:
+  stage: package
+  extends: .package-helm-base
+
+.default-deploy:
+  stage: deploy-production
+  extends: .deploy-helm-base

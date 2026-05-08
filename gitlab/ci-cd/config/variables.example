@@ -1,0 +1,92 @@
+# GitLab CI/CD Variables Configuration
+# Copy these variables to GitLab: Settings > CI/CD > Variables
+# Mark sensitive variables as "Protected" and "Masked"
+
+# ============================================
+# KUBERNETES CONFIGURATION (Required)
+# ============================================
+
+# Option 1: Use Kubeconfig (Recommended)
+# Base64 encode your kubeconfig file:
+# cat ~/.kube/config | base64 -w 0
+KUBE_CONFIG=<base64-encoded-kubeconfig>
+
+# Option 2: Use Server and Token
+KUBE_SERVER=https://your-k8s-api-server:6443
+KUBE_TOKEN=<service-account-token>
+KUBE_SKIP_TLS_VERIFY=false  # Set to true only for development
+
+# ============================================
+# COMPONENT VERSIONS (Optional)
+# ============================================
+
+# Cluster Components
+CILIUM_VERSION=1.14.0
+NGINX_INGRESS_VERSION=4.8.0
+METALLB_VERSION=0.14.0
+NFS_VERSION=4.0.18
+
+# Monitoring Components
+PROMETHEUS_VERSION=55.0.0
+GRAFANA_VERSION=7.3.0
+LOKI_VERSION=2.9.0
+
+# Novaridium Components
+POSTGRESQL_VERSION=15.0.0
+MINIO_VERSION=5.0.0
+MILVUS_VERSION=4.0.0
+AIRBYTE_VERSION=0.50.0
+FLYTE_VERSION=1.10.0
+
+# ============================================
+# DEPLOYMENT CONFIGURATION (Optional)
+# ============================================
+
+DEPLOY_TIMEOUT=600s
+HELM_VERSION=3.14.0
+KUBECTL_VERSION=1.29.0
+
+# ============================================
+# NOTIFICATIONS (Optional)
+# ============================================
+
+# Slack Webhook URL
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+
+# Email for notifications
+NOTIFICATION_EMAIL=devops@example.com
+
+# ============================================
+# REGISTRY CONFIGURATION (Optional)
+# ============================================
+
+CI_REGISTRY=registry.gitlab.com
+CI_REGISTRY_USER=<registry-username>
+CI_REGISTRY_PASSWORD=<registry-password>
+
+# ============================================
+# ENVIRONMENT-SPECIFIC OVERRIDES (Optional)
+# ============================================
+
+# Development Environment
+DEV_KUBE_SERVER=https://dev-k8s-api-server:6443
+DEV_KUBE_TOKEN=<dev-service-account-token>
+
+# Staging Environment
+STAGING_KUBE_SERVER=https://staging-k8s-api-server:6443
+STAGING_KUBE_TOKEN=<staging-service-account-token>
+
+# Production Environment
+PROD_KUBE_SERVER=https://prod-k8s-api-server:6443
+PROD_KUBE_TOKEN=<prod-service-account-token>
+
+# ============================================
+# SECURITY SCANNING (Optional)
+# ============================================
+
+# Trivy configuration
+TRIVY_SKIP_UPDATE=false
+TRIVY_SEVERITY=HIGH,CRITICAL
+
+# TruffleHog configuration
+TRUFFLEHOG_ONLY_VERIFIED=true

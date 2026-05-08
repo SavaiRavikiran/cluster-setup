@@ -1,0 +1,105 @@
+# Security Scanning Template
+# Provides security scanning capabilities
+
+.security-scan-base:
+  allow_failure: true
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      sast: gl-sast-report.json
+
+# Secret scanning
+security:scan-secrets:
+  extends: .security-scan-base
+  image: trufflesecurity/trufflehog:latest
+  script:
+    - |
+      echo "Scanning for secrets..."
+      trufflehog filesystem . \
+        --json \
+        --only-verified \
+        --fail \
+        > gl-sast-report.json || true
+  only:
+    - merge_requests
+    - main
+    - develop
+    - tags
+
+# Container image scanning
+security:scan-containers:
+  extends: .security-scan-base
+  image: aquasec/trivy:latest
+  script:
+    - |
+      echo "Scanning container images..."
+      # Scan any Dockerfiles
+      find . -name "Dockerfile*" -type f | while read dockerfile; do
+        echo "Scanning: $dockerfile"
+        trivy image --exit-code 0 \
+          --severity HIGH,CRITICAL \
+          --format json \
+          --output "trivy-$(basename $dockerfile).json" \
+          $(grep -i "^FROM" "$dockerfile" | head -1 | awk '{print $2}') || true
+      done
+  only:
+    - merge_requests
+    - main
+    - develop
+
+# Kubernetes manifest security scanning
+security:scan-k8s-manifests:
+  extends: .security-scan-base
+  image: aquasec/trivy:latest
+  script:
+    - |
+      echo "Scanning Kubernetes manifests..."
+      find . -type f \( -name "*.yaml" -o -name "*.yml" \) \
+        -not -path "*/\.*" \
+        -not -path "*/node_modules/*" | while read manifest; do
+        echo "Scanning: $manifest"
+        trivy k8s cluster \
+          --file "$manifest" \
+          --format json \
+          --output "trivy-k8s-$(basename $manifest).json" || true
+      done
+  only:
+    - merge_requests
+    - main
+    - develop
+
+# Helm chart security scanning
+security:scan-helm-charts:
+  extends: .security-scan-base
+  image: aquasec/trivy:latest
+  script:
+    - |
+      echo "Scanning Helm charts..."
+      find . -name "Chart.yaml" -type f | while read chart; do
+        chart_dir=$(dirname "$chart")
+        echo "Scanning chart: $chart_dir"
+        trivy config "$chart_dir" \
+          --format json \
+          --output "trivy-helm-$(basename $chart_dir).json" || true
+      done
+  only:
+    - merge_requests
+    - main
+    - develop
+
+# Dependency vulnerability scanning
+security:scan-dependencies:
+  extends: .security-scan-base
+  image: alpine:latest
+  script:
+    - |
+      echo "Scanning dependencies..."
+      apk add --no-cache nodejs npm || true
+      # Add dependency scanning for package.json, requirements.txt, etc.
+      find . -name "package.json" -exec npm audit --json {} \; || true
+      find . -name "requirements.txt" -exec pip-audit --format json {} \; || true
+  only:
+    - merge_requests
+    - main
+    - develop

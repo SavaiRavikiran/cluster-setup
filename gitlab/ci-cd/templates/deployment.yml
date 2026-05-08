@@ -1,0 +1,98 @@
+# Base Deployment Template
+# This template provides common deployment functionality
+
+.deploy-base:
+  image: alpine/helm:${HELM_VERSION}
+  before_script:
+    # Install kubectl
+    - apk add --no-cache curl
+    - curl -LO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    
+    # Configure kubectl
+    - |
+      if [ -n "$KUBE_CONFIG" ]; then
+        echo "$KUBE_CONFIG" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+      elif [ -n "$KUBE_SERVER" ] && [ -n "$KUBE_TOKEN" ]; then
+        kubectl config set-cluster k8s --server=$KUBE_SERVER --insecure-skip-tls-verify=${KUBE_SKIP_TLS_VERIFY:-false}
+        kubectl config set-credentials k8s --token=$KUBE_TOKEN
+        kubectl config set-context k8s --cluster=k8s --user=k8s
+        kubectl config use-context k8s
+      else
+        echo "ERROR: KUBE_CONFIG or (KUBE_SERVER and KUBE_TOKEN) must be set"
+        exit 1
+      fi
+    
+    # Verify kubectl connection
+    - kubectl cluster-info || exit 1
+    
+    # Use local Helm charts repository instead of remote repos
+    - |
+      echo "Setting up local Helm charts repository..."
+      if [ -f "helm-charts/index.yaml" ]; then
+        helm repo add local-charts file://$(pwd)/helm-charts || true
+        helm repo update local-charts || true
+        echo "Local Helm charts repository configured"
+      else
+        echo "WARNING: helm-charts/index.yaml not found. Run scripts/07-package-helm-charts.sh to create it."
+        echo "Falling back to using charts directly from helm-charts/ directory"
+      fi
+    
+    # Set deployment metadata with naming convention
+    - |
+      # Generate namespace using naming convention: nova-<env><application-name>
+      ENV_SHORT="${ENVIRONMENT:0:3}"  # dev, sta, pro
+      if [ "$ENV_SHORT" = "sta" ]; then
+        ENV_SHORT="staging"
+      elif [ "$ENV_SHORT" = "pro" ]; then
+        ENV_SHORT="prod"
+      fi
+      
+      APP_NAME="${COMPONENT:-${CI_PROJECT_NAME}}"
+      KUBERNETES_NAMESPACE="${KUBERNETES_NAMESPACE:-nova-${ENV_SHORT}${APP_NAME}}"
+      DOMAIN="${APP_NAME}.nova-${ENV_SHORT}.eu.novartis.net"
+      
+      echo "Deployment Information:"
+      echo "  Component: ${COMPONENT}"
+      echo "  Environment: ${ENVIRONMENT}"
+      echo "  Namespace: ${KUBERNETES_NAMESPACE}"
+      echo "  Domain: ${DOMAIN}"
+      echo "  Commit: ${CI_COMMIT_SHORT_SHA}"
+      echo "  Branch: ${CI_COMMIT_REF_NAME}"
+      echo "  Tag: ${CI_COMMIT_TAG:-none}"
+  
+  after_script:
+    # Save deployment information
+    - |
+      if [ -n "$ENVIRONMENT" ]; then
+        echo "Deployment to ${ENVIRONMENT} completed"
+        kubectl get all -n ${KUBERNETES_NAMESPACE:-${KUBERNETES_NAMESPACE_PREFIX}-${COMPONENT}} || true
+      fi
+  
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - deployment-*.log
+    reports:
+      dotenv: deployment.env
+
+# Environment-specific deployment configurations
+.deploy-dev:
+  extends: .deploy-base
+  variables:
+    ENVIRONMENT: "dev"
+    HELM_UPGRADE_FLAGS: "--atomic --timeout ${DEPLOY_TIMEOUT} --wait --set global.environment=dev"
+
+.deploy-staging:
+  extends: .deploy-base
+  variables:
+    ENVIRONMENT: "staging"
+    HELM_UPGRADE_FLAGS: "--atomic --timeout ${DEPLOY_TIMEOUT} --wait --set global.environment=staging"
+
+.deploy-production:
+  extends: .deploy-base
+  variables:
+    ENVIRONMENT: "production"
+    HELM_UPGRADE_FLAGS: "--atomic --timeout ${DEPLOY_TIMEOUT} --wait --set global.environment=production"

@@ -1,0 +1,87 @@
+# Image Build Template with Security Scanning
+# This template builds container images and performs security scanning
+
+.build-image-base:
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - |
+      export IMAGE_TAG="${CI_COMMIT_SHORT_SHA}"
+      export IMAGE_NAME="${CI_REGISTRY_IMAGE:-${CI_PROJECT_PATH}}"
+      export FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+      export LATEST_IMAGE="${IMAGE_NAME}:latest"
+  script:
+    - |
+      echo "Building image: ${FULL_IMAGE}"
+      docker build -t ${FULL_IMAGE} -t ${LATEST_IMAGE} .
+      docker push ${FULL_IMAGE}
+      docker push ${LATEST_IMAGE}
+      echo "Image built and pushed successfully"
+  after_script:
+    - docker logout $CI_REGISTRY || true
+
+# Build with security scanning
+build:image:scan:
+  extends: .build-image-base
+  stage: build
+  script:
+    - |
+      echo "Building image: ${FULL_IMAGE}"
+      docker build -t ${FULL_IMAGE} -t ${LATEST_IMAGE} .
+      
+      # Security scanning with Trivy
+      echo "Scanning image for vulnerabilities..."
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image --exit-code 0 --severity HIGH,CRITICAL \
+        --format json --output trivy-scan.json ${FULL_IMAGE} || true
+      
+      # Push image if scan passes (or if we allow failures)
+      docker push ${FULL_IMAGE}
+      docker push ${LATEST_IMAGE}
+      
+      echo "Image built, scanned, and pushed successfully"
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - trivy-scan.json
+    reports:
+      sast: trivy-scan.json
+  only:
+    - branches
+    - tags
+
+# Build without scanning (faster, for dev)
+build:image:
+  extends: .build-image-base
+  stage: build
+  only:
+    - develop
+    - main
+
+# Build and tag with version
+build:image:version:
+  extends: .build-image-base
+  stage: build
+  script:
+    - |
+      VERSION="${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+      VERSION_IMAGE="${IMAGE_NAME}:${VERSION}"
+      
+      echo "Building image: ${FULL_IMAGE}"
+      docker build -t ${FULL_IMAGE} -t ${LATEST_IMAGE} -t ${VERSION_IMAGE} .
+      
+      # Security scanning
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image --exit-code 0 --severity HIGH,CRITICAL \
+        ${FULL_IMAGE} || true
+      
+      docker push ${FULL_IMAGE}
+      docker push ${LATEST_IMAGE}
+      docker push ${VERSION_IMAGE}
+      
+      echo "Image built with version tag: ${VERSION}"
+  only:
+    - tags

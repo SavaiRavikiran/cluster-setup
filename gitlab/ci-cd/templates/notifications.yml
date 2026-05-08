@@ -1,0 +1,57 @@
+# Notifications Template
+# Provides notification capabilities for CI/CD events
+
+.notify-base:
+  image: curlimages/curl:latest
+  script:
+    - |
+      STATUS="${CI_JOB_STATUS:-unknown}"
+      ENVIRONMENT="${ENVIRONMENT:-unknown}"
+      COMPONENT="${COMPONENT:-unknown}"
+      MESSAGE="Deployment ${STATUS} for ${COMPONENT} in ${ENVIRONMENT}"
+      
+      echo "Sending notification: ${MESSAGE}"
+      
+      # Slack notification (if configured)
+      if [ -n "$SLACK_WEBHOOK_URL" ]; then
+        curl -X POST -H 'Content-type: application/json' \
+          --data "{\"text\":\"${MESSAGE}\",\"attachments\":[{\"color\":\"${STATUS_COLOR:-good}\",\"fields\":[{\"title\":\"Component\",\"value\":\"${COMPONENT}\",\"short\":true},{\"title\":\"Environment\",\"value\":\"${ENVIRONMENT}\",\"short\":true},{\"title\":\"Status\",\"value\":\"${STATUS}\",\"short\":true},{\"title\":\"Pipeline\",\"value\":\"${CI_PIPELINE_URL}\",\"short\":false}]}]}" \
+          "$SLACK_WEBHOOK_URL" || true
+      fi
+      
+      # Email notification (if configured)
+      if [ -n "$NOTIFICATION_EMAIL" ]; then
+        echo "${MESSAGE}\n\nPipeline: ${CI_PIPELINE_URL}\nCommit: ${CI_COMMIT_SHORT_SHA}" | \
+          mail -s "CI/CD Notification: ${COMPONENT}" "$NOTIFICATION_EMAIL" || true
+      fi
+  when: always
+
+# Notification for successful deployments
+notify:deployment-success:
+  extends: .notify-base
+  variables:
+    STATUS_COLOR: "good"
+    CI_JOB_STATUS: "success"
+  only:
+    - main
+    - tags
+
+# Notification for failed deployments
+notify:deployment-failure:
+  extends: .notify-base
+  variables:
+    STATUS_COLOR: "danger"
+    CI_JOB_STATUS: "failed"
+  only:
+    - main
+    - tags
+
+# Notification for manual deployment approval required
+notify:deployment-pending:
+  extends: .notify-base
+  variables:
+    STATUS_COLOR: "warning"
+    CI_JOB_STATUS: "pending"
+  only:
+    - main
+    - tags
